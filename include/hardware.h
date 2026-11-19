@@ -53,4 +53,18 @@ void cancelSleepPreparation();
 // This shuts down controllable peripherals and deep-sleeps ESP32; it does not
 // disconnect the battery or claim zero consumption. It never returns.
 [[noreturn]] void enterDeepSleep();
+// Optional user orientation. Rotatable targets keep the 240x320 portrait UI as
+// the logical layout; in landscape the UI maps it onto a 320x240 panel.
+// setDisplayLandscape applies the rotation immediately and persists it in NVS.
+#if defined(LORA_TUNNEL_WIO_TRACKER_L2)
+bool displayRotatable();
+bool displayLandscape();
+void setDisplayLandscape(bool landscape);
+// SD card power is switched by the I/O expander; enable before SD_MMC mount.
+bool setSdPower(bool enabled);
+#else
+inline bool displayRotatable() { return false; }
+inline bool displayLandscape() { return false; }
+inline void setDisplayLandscape(bool) {}
+#endif
 }

@@ -66,9 +66,75 @@ void* frameBuffer = nullptr;
 bool buffered = false, fullClearNeeded = true, pagePainted = false;
 Page paintedPage = Page::Home;
 
-lgfx::LovyanGFX& gfx() {
+// All drawing and touch targets use the 240x320 portrait layout. Rotatable
+// targets in landscape map that layout onto a 320x240 surface: geometry scales
+// by 4/3 horizontally and 3/4 vertically, text keeps its pixel size.
+bool landscapeUi = false;
+
+lgfx::LovyanGFX& target() {
   if (buffered) return frame;
   return hw::display();
+}
+
+class Canvas {
+  lgfx::LovyanGFX& g_;
+  static int mapX(int x) { return landscapeUi ? x * 4 / 3 : x; }
+  static int mapY(int y) { return landscapeUi ? y * 3 / 4 : y; }
+  struct Box { int x, y, w, h; };
+  static Box box(int x, int y, int w, int h) {
+    const int left = mapX(x), top = mapY(y);
+    int width = mapX(x + w) - left, height = mapY(y + h) - top;
+    if (w > 0 && width < 1) width = 1;
+    if (h > 0 && height < 1) height = 1;
+    return {left, top, width, height};
+  }
+  static int radius(const Box& b, int r) { return std::max(0, std::min(r, std::min(b.w, b.h) / 2)); }
+
+public:
+  explicit Canvas(lgfx::LovyanGFX& g) : g_(g) {}
+  void startWrite() { g_.startWrite(); }
+  void endWrite() { g_.endWrite(); }
+  void fillScreen(uint16_t color) { g_.fillScreen(color); }
+  void fillRect(int x, int y, int w, int h, uint16_t color) {
+    const Box b = box(x, y, w, h); g_.fillRect(b.x, b.y, b.w, b.h, color);
+  }
+  void drawRect(int x, int y, int w, int h, uint16_t color) {
+    const Box b = box(x, y, w, h); g_.drawRect(b.x, b.y, b.w, b.h, color);
+  }
+  void fillRoundRect(int x, int y, int w, int h, int r, uint16_t color) {
+    const Box b = box(x, y, w, h); g_.fillRoundRect(b.x, b.y, b.w, b.h, radius(b, r), color);
+  }
+  void drawRoundRect(int x, int y, int w, int h, int r, uint16_t color) {
+    const Box b = box(x, y, w, h); g_.drawRoundRect(b.x, b.y, b.w, b.h, radius(b, r), color);
+  }
+  void fillCircle(int x, int y, int r, uint16_t color) { g_.fillCircle(mapX(x), mapY(y), r, color); }
+  void drawString(const char* text, int x, int y) { g_.drawString(text, mapX(x), mapY(y)); }
+  // Fits a square image of sourceSide pixels into the mapped box, centred.
+  void drawSquarePng(const uint8_t* data, size_t size, int x, int y, int side, uint32_t sourceSide) {
+    const Box b = box(x, y, side, side);
+    const int fitted = std::min(b.w, b.h);
+    g_.drawPng(data, size, b.x + (b.w - fitted) / 2, b.y + (b.h - fitted) / 2, fitted, fitted,
+               0, 0, float(fitted) / sourceSide);
+  }
+  void pushSprite(lgfx::LGFX_Sprite& sprite, int x, int y) { sprite.pushSprite(&g_, mapX(x), mapY(y)); }
+  void setTextSize(int value) { g_.setTextSize(value); }
+  void setTextColor(uint16_t value) { g_.setTextColor(value); }
+  template <typename Datum> void setTextDatum(Datum value) { g_.setTextDatum(value); }
+  void setTextWrap(bool x, bool y) { g_.setTextWrap(x, y); }
+  template <typename Font> void setFont(Font font) { g_.setFont(font); }
+};
+
+Canvas gfx() { return Canvas(target()); }
+
+void applyOrientation() {
+  landscapeUi = hw::displayRotatable() && hw::displayLandscape();
+  if (buffered) {
+    // Same byte count either way; only the sprite's width/height swap.
+    frame.setBuffer(frameBuffer, landscapeUi ? FRAME_HEIGHT : FRAME_WIDTH,
+                    landscapeUi ? FRAME_WIDTH : FRAME_HEIGHT, 16);
+  }
+  fullClearNeeded = true;
+  dirty = true;
 }
 
 void present() {
@@ -124,7 +190,7 @@ void heading(const char* subtitle) {
   gfx().drawRect(12, 15, 9, 5, CYAN);
   gfx().fillRect(12, 23, 9, 1, GREEN);
   label("LORA TUNNEL", 33, 9, GREEN, 2, 15);
-  if(vtsReady) vtsMark.pushSprite(&gfx(),207,1);
+  if(vtsReady) gfx().pushSprite(vtsMark,207,1);
   label(subtitle, 9, 32, MUTED, 1, 36);
   if (!buffered) label("UI BUFFER LOW: DIRECT DISPLAY", 3, 0, AMBER, 1, 38);
 }
@@ -140,8 +206,7 @@ void splash() {
                            (uint32_t{logoStart[21]} << 16) |
                            (uint32_t{logoStart[22]} << 8) | logoStart[23];
     if (width && height && width <= 4096 && height <= 4096) {
-      const float scale = 180.0f / std::max(width, height);
-      gfx().drawPng(logoStart, size, 30, 48, 180, 180, 0, 0, scale);
+      gfx().drawSquarePng(logoStart, size, 30, 48, 180, std::max(width, height));
     }
   }
   label("WIFI + BLE + LORA", 18, 234, CYAN, 2, 18);
@@ -363,14 +428,26 @@ void reconDetail() {
   button(8, 280, 224, 32, "< BACK TO MATCHES", CYAN);
 }
 
+// Draw, touch and focus share these rows. Rotatable targets add DISPLAY.
+enum SettingsRow : uint8_t { RegionRow, KeysRow, PowerRow, MeshRow, DisplayRow };
+constexpr Rect SETTINGS_ROWS[]={{8,52,224,38},{8,102,224,38},{8,152,224,38},{8,202,224,32}};
+constexpr Rect ROTATABLE_SETTINGS_ROWS[]={{8,50,224,34},{8,90,224,34},{8,130,224,34},{8,170,224,32},{8,208,224,30}};
+size_t settingsRows() { return hw::displayRotatable() ? 5 : 4; }
+Rect settingsRow(size_t row) { return hw::displayRotatable() ? ROTATABLE_SETTINGS_ROWS[row] : SETTINGS_ROWS[row]; }
+void settingsButton(size_t row,const char* name,uint16_t accent) {
+  const Rect r=settingsRow(row);button(r.x,r.y,r.w,r.h,name,accent);
+}
+
 void settings(const ui::Model& m) {
   heading("SETTINGS / DEVICE PREFERENCES");
   char region[40];
   snprintf(region,sizeof(region),"LORA REGION: %s",m.region_configured?m.region:"CHOOSE");
-  button(8,52,224,38,region,GREEN);
-  button(8,102,224,38,"CONNECTION KEYS",CYAN);
-  button(8,152,224,38,"POWER",AMBER);
-  button(8,202,224,32,"MESH RADIO / DECODE SETTINGS",GREEN);
+  settingsButton(RegionRow,region,GREEN);
+  settingsButton(KeysRow,"CONNECTION KEYS",CYAN);
+  settingsButton(PowerRow,"POWER",AMBER);
+  settingsButton(MeshRow,"MESH RADIO / DECODE SETTINGS",GREEN);
+  if(settingsRows()>DisplayRow)
+    settingsButton(DisplayRow,hw::displayLandscape()?"DISPLAY: LANDSCAPE":"DISPLAY: PORTRAIT",CYAN);
   if(m.notice[0]) wrapped(m.notice,12,246,sizeof(m.notice),AMBER);
   button(8,280,108,32,"< BACK",CYAN);
   button(124,280,108,32,"RETRY SD",GREEN);
@@ -589,7 +666,10 @@ void drawKeyboard() {
   else memcpy(view, input + inputSize - visible, visible);
   if(messageEditor && messageState.composing) {
     if(!inputSize)label("Tap keys below...",14,74,MUTED,1,34);
-    for(size_t offset=0;offset<inputSize;offset+=35)label(input+offset,14,69+int(offset/35)*8,WHITE,1,std::min(size_t{35},inputSize-offset));
+    // Landscape compresses height, so use the extra width for longer lines.
+    const size_t perLine=landscapeUi?48:35;
+    const int top=landscapeUi?67:69, step=landscapeUi?12:8;
+    for(size_t offset=0;offset<inputSize;offset+=perLine)label(input+offset,14,top+int(offset/perLine)*step,WHITE,1,std::min(perLine,inputSize-offset));
   } else label(inputSize ? view : messageEditor&&secret?"Blank = public default":messageEditor&&messageState.setting==1?"Blank = AUTO / current preset":"Tap keys below...", 14, 74, inputSize ? WHITE : MUTED, 1, 34);
   char length[24];
   snprintf(length, sizeof(length), "%u / %u characters", static_cast<unsigned>(inputSize),unsigned(messageEditor?ui::messages::editLimit(messageState):127));
@@ -674,10 +754,15 @@ void touchAction(uint16_t x, uint16_t y, const ui::Model& m) {
   } else if (page == Page::ReconDetail) {
     if (inside(x, y, 8, 280, 224, 32)) setPage(Page::Recon);
   } else if (page == Page::Settings) {
-    if(inside(x,y,8,52,224,38)) openRegions(m,false);
-    else if(inside(x,y,8,102,224,38)) setPage(Page::Credentials);
-    else if(inside(x,y,8,152,224,38)) { powerDialog=true; focusIndex=-1; }
-    else if(inside(x,y,8,202,224,32))setPage(Page::MeshSettings);
+    auto row=[&](size_t i){const Rect r=settingsRow(i);return inside(x,y,r.x,r.y,r.w,r.h);};
+    if(row(RegionRow)) openRegions(m,false);
+    else if(row(KeysRow)) setPage(Page::Credentials);
+    else if(row(PowerRow)) { powerDialog=true; focusIndex=-1; }
+    else if(row(MeshRow))setPage(Page::MeshSettings);
+    else if(settingsRows()>DisplayRow && row(DisplayRow)) {
+      hw::setDisplayLandscape(!hw::displayLandscape());
+      applyOrientation();
+    }
     else if(inside(x,y,8,280,108,32)) setPage(settingsParent);
     else if(inside(x,y,124,280,108,32) && onAction) onAction(ui::Action::RetryStorage,0,"");
   } else if(page==Page::MeshSettings) {
@@ -795,8 +880,7 @@ size_t focusTargets(const ui::Model& m, Rect targets[MAX_TARGETS]) {
   } else if (page == Page::ReconDetail) {
     add(8, 280, 224, 32);
   } else if (page == Page::Settings) {
-    add(8,52,224,38); add(8,102,224,38); add(8,152,224,38);
-    add(8,202,224,32);
+    for(size_t i=0;i<settingsRows();++i){const Rect r=settingsRow(i);add(r.x,r.y,r.w,r.h);}
     add(8,280,108,32); add(124,280,108,32);
   } else if(page==Page::MeshSettings) {
     for(unsigned i=0;i<ui::mesh_settings::FieldCount;++i)add(8,65+int(i)*30,224,27);
@@ -880,10 +964,10 @@ void begin(Handler handler) {
   buffered = frameBuffer != nullptr;
   if (buffered) {
     frame.setColorDepth(16);
-    frame.setBuffer(frameBuffer, FRAME_WIDTH, FRAME_HEIGHT, 16);
   } else {
     Serial.println("UI framebuffer allocation failed; direct drawing fallback");
   }
+  applyOrientation();
   gfx().setTextWrap(false, false);
   gfx().setFont(&lgfx::fonts::Font0);
   // Decode the supplied logo once, then push a tiny cached mark in each header.
@@ -947,7 +1031,12 @@ void tick(const Model& model) {
     if(!model.region_selection_made) openRegions(model,true);
   }
   uint16_t x, y;
-  const auto touch = hw::readTouch(x, y);
+  auto touch = hw::readTouch(x, y);
+  if (touch == hw::TouchState::Pressed && landscapeUi) {
+    // Inverse of the drawing map; panel pixels back to portrait layout units.
+    x = std::min<uint16_t>(FRAME_WIDTH - 1, x * 3 / 4);
+    y = std::min<uint16_t>(FRAME_HEIGHT - 1, y * 4 / 3);
+  }
   // Failed/invalid reports never rearm a held gesture. Only a stable valid
   // release permits another action; an interruption restarts that interval.
   // Initial taps stay immediate. This prevents Back or a dragged finger from

@@ -63,4 +63,8 @@ static uint16_t hostTouchX=0,hostTouchY=0;
 inline TouchState readTouch(uint16_t& x,uint16_t& y){x=hostTouchX;y=hostTouchY;return hostTouchState;}
 inline bool touch(uint16_t& x,uint16_t& y){return readTouch(x,y)==TouchState::Pressed;}
 inline lgfx::LGFX_Device& display() {static lgfx::LGFX_Device screen;return screen;}
+static bool hostRotatable=false,hostLandscape=false;
+inline bool displayRotatable(){return hostRotatable;}
+inline bool displayLandscape(){return hostLandscape;}
+inline void setDisplayLandscape(bool landscape){hostLandscape=landscape;display().width=landscape?320:240;display().height=landscape?240:320;}
 }
