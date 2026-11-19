@@ -67,4 +67,11 @@ static bool hostRotatable=false,hostLandscape=false;
 inline bool displayRotatable(){return hostRotatable;}
 inline bool displayLandscape(){return hostLandscape;}
 inline void setDisplayLandscape(bool landscape){hostLandscape=landscape;display().width=landscape?320:240;display().height=landscape?240:320;}
+static bool hostVolumeAdjustable=false;
+static uint8_t hostVolume=75;
+static uint16_t hostLastToneHz=0;
+inline bool alertVolumeAdjustable(){return hostVolumeAdjustable;}
+inline uint8_t alertVolume(){return hostVolume;}
+inline void setAlertVolume(uint8_t percent){hostVolume=percent;}
+inline void alertTone(uint16_t hz,uint16_t){hostLastToneHz=hz;}
 }

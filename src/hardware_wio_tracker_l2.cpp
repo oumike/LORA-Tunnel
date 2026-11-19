@@ -288,9 +288,30 @@ I2SClass i2s;
 bool ready=false;
 TaskHandle_t task=nullptr;
 portMUX_TYPE noteLock=portMUX_INITIALIZER_UNLOCKED;
-uint16_t pendingFrequency=0, pendingDuration=0;
-uint32_t pendingSequence=0;
+// Notes are timestamped when the main-loop scheduler emits them and replayed
+// with one constant offset, so amplifier power-up delays a riff instead of
+// dropping its first notes. 64 events hold an intro plus a 24-note cue.
+struct Event { uint16_t hz, durationMs; uint32_t at; };
+constexpr size_t QUEUE_SIZE=64;
+Event queue[QUEUE_SIZE];
+size_t queueHead=0, queueTail=0;
 volatile bool shuttingDown=false;
+volatile uint8_t volumePercent=75;
+
+bool pop(Event& event) {
+  bool ok=false;
+  portENTER_CRITICAL(&noteLock);
+  if(queueHead!=queueTail) { event=queue[queueHead]; queueHead=(queueHead+1)%QUEUE_SIZE; ok=true; }
+  portEXIT_CRITICAL(&noteLock);
+  return ok;
+}
+bool peek(Event& event) {
+  bool ok=false;
+  portENTER_CRITICAL(&noteLock);
+  if(queueHead!=queueTail) { event=queue[queueHead]; ok=true; }
+  portEXIT_CRITICAL(&noteLock);
+  return ok;
+}
 
 namespace codec {
 bool write(uint8_t reg,uint8_t value) { return writeRegister8(board::CODEC_ADDRESS,reg,value); }
@@ -352,46 +373,69 @@ void powerDown() {
   ampOn=false;
 }
 
+// Chime voice: 3 ms attack, gentle exponential decay, 6 ms release, with a
+// soft octave partial so the small speaker sounds less like a test tone.
+constexpr uint32_t ATTACK_SAMPLES=SAMPLE_RATE*3/1000;
+constexpr uint32_t RELEASE_SAMPLES=SAMPLE_RATE*6/1000;
+constexpr float DECAY_PER_SAMPLE=0.99985f; // ~0.4 s time constant.
+constexpr float FULL_SCALE=14000.0f;
+
 void run(void*) {
   int16_t block[BLOCK_SAMPLES];
-  uint32_t seenSequence=0, endAt=0, idleSince=millis();
-  uint16_t frequency=0;
-  float phase=0.0f;
-  bool playing=false;
+  uint32_t idleSince=millis(), offset=0, noteSamples=0, noteLength=0;
+  float phase=0.0f, step=0.0f, decay=1.0f, level=0.0f;
+  bool timeline=false, noteOn=false;
   for(;;) {
-    ulTaskNotifyTake(pdTRUE,playing ? 0 : (ampOn ? pdMS_TO_TICKS(250) : portMAX_DELAY));
-    if(shuttingDown) { powerDown(); vTaskSuspend(nullptr); }
-    uint16_t nextFrequency=0, nextDuration=0;
-    uint32_t sequence=0;
-    portENTER_CRITICAL(&noteLock);
-    sequence=pendingSequence;
-    nextFrequency=pendingFrequency;
-    nextDuration=pendingDuration;
-    portEXIT_CRITICAL(&noteLock);
-    if(sequence!=seenSequence) {
-      seenSequence=sequence;
-      frequency=nextFrequency;
-      playing=frequency && nextDuration && powerUp();
-      endAt=millis()+nextDuration;
-    }
-    if(playing && int32_t(millis()-endAt)<0) {
-      const float step=2.0f*float(M_PI)*frequency/SAMPLE_RATE;
-      for(auto& sample:block) {
-        sample=int16_t(9000.0f*sinf(phase));
-        phase+=step;
-        if(phase>=2.0f*float(M_PI)) phase-=2.0f*float(M_PI);
+    Event event;
+    const bool busy=noteOn || peek(event);
+    if(!busy) {
+      if(timeline) {
+        timeline=false;
+        idleSince=millis();
+        memset(block,0,sizeof(block));
+        for(int i=0;i<4;++i) i2s.write(reinterpret_cast<uint8_t*>(block),sizeof(block));
       }
-      i2s.write(reinterpret_cast<uint8_t*>(block),sizeof(block));
+      if(ampOn && millis()-idleSince>=AMP_IDLE_OFF_MS) powerDown();
+      ulTaskNotifyTake(pdTRUE,ampOn ? pdMS_TO_TICKS(250) : portMAX_DELAY);
+      if(shuttingDown) { powerDown(); vTaskSuspend(nullptr); }
       continue;
     }
-    if(playing) {
-      playing=false;
-      phase=0.0f;
-      idleSince=millis();
-      memset(block,0,sizeof(block));
-      for(int i=0;i<4;++i) i2s.write(reinterpret_cast<uint8_t*>(block),sizeof(block));
+    if(shuttingDown) { powerDown(); vTaskSuspend(nullptr); }
+    if(!timeline) {
+      if(!powerUp()) { while(pop(event)) {} continue; }
+      if(!peek(event)) continue;
+      offset=millis()-event.at;
+      timeline=true;
     }
-    if(ampOn && millis()-idleSince>=AMP_IDLE_OFF_MS) powerDown();
+    const uint32_t now=millis();
+    while(peek(event) && int32_t(now-(event.at+offset))>=0) {
+      pop(event);
+      if(event.hz && event.durationMs) {
+        step=2.0f*float(M_PI)*event.hz/SAMPLE_RATE;
+        noteLength=uint32_t(event.durationMs)*SAMPLE_RATE/1000;
+        noteSamples=0; decay=1.0f; noteOn=true;
+        const float v=volumePercent/100.0f;
+        level=FULL_SCALE*v*v;
+      } else if(noteOn && noteSamples+RELEASE_SAMPLES<noteLength) {
+        noteLength=noteSamples+RELEASE_SAMPLES; // Fade instead of clicking.
+      }
+    }
+    for(auto& sample:block) {
+      float value=0.0f;
+      if(noteOn) {
+        float envelope=decay;
+        if(noteSamples<ATTACK_SAMPLES) envelope*=float(noteSamples)/ATTACK_SAMPLES;
+        const uint32_t left=noteLength-noteSamples;
+        if(left<RELEASE_SAMPLES) envelope*=float(left)/RELEASE_SAMPLES;
+        value=level*envelope*(sinf(phase)+0.25f*sinf(2.0f*phase))/1.25f;
+        phase+=step;
+        if(phase>=2.0f*float(M_PI)) phase-=2.0f*float(M_PI);
+        decay*=DECAY_PER_SAMPLE;
+        if(++noteSamples>=noteLength) { noteOn=false; phase=0.0f; }
+      }
+      sample=int16_t(value);
+    }
+    i2s.write(reinterpret_cast<uint8_t*>(block),sizeof(block));
   }
 }
 
@@ -416,10 +460,15 @@ bool begin() {
 }
 }
 
-void loadOrientation() {
+void loadPreferences() {
   Preferences preferences;
   if(preferences.begin("lt-display",true)) {
     landscape=preferences.getBool("landscape",true);
+    preferences.end();
+  }
+  if(preferences.begin("lt-audio",true)) {
+    const uint8_t volume=preferences.getUChar("volume",75);
+    audio::volumePercent=volume<10?10:volume>100?100:volume;
     preferences.end();
   }
 }
@@ -445,7 +494,7 @@ bool begin() {
   Wire.setTimeOut(10);
   const bool expanderReady=io::begin();
 
-  loadOrientation();
+  loadPreferences();
   const bool displayInitialized=expanderReady && screen.init();
   screen.setRotation(landscape ? ROTATION_LANDSCAPE : ROTATION_PORTRAIT);
   screen.setBrightness(160);
@@ -522,12 +571,24 @@ bool touch(uint16_t& x,uint16_t& y) { return readTouch(x,y)==TouchState::Pressed
 bool alertAudioReady() { return audio::ready; }
 void alertTone(uint16_t frequencyHz,uint16_t durationMs) {
   if(!audio::ready) return;
+  const audio::Event event{frequencyHz,durationMs,millis()};
   portENTER_CRITICAL(&audio::noteLock);
-  audio::pendingFrequency=frequencyHz;
-  audio::pendingDuration=durationMs;
-  ++audio::pendingSequence;
+  const size_t next=(audio::queueTail+1)%audio::QUEUE_SIZE;
+  // A full queue drops the event; every tone already carries its own end.
+  if(next!=audio::queueHead) { audio::queue[audio::queueTail]=event; audio::queueTail=next; }
   portEXIT_CRITICAL(&audio::noteLock);
   xTaskNotifyGive(audio::task);
+}
+bool alertVolumeAdjustable() { return audio::ready; }
+uint8_t alertVolume() { return audio::volumePercent; }
+void setAlertVolume(uint8_t percent) {
+  percent=percent<10?10:percent>100?100:percent;
+  audio::volumePercent=percent;
+  Preferences preferences;
+  if(preferences.begin("lt-audio",false)) {
+    preferences.putUChar("volume",percent);
+    preferences.end();
+  }
 }
 
 float batteryVolts() {

@@ -221,6 +221,20 @@ void landscapeChecks(const char* output,ui::Model m) {
   hw::hostRotatable=false;hw::setDisplayLandscape(false);applyOrientation();
   expect(frame.width==240&&frame.height==320,"fixed targets keep portrait");
   setPage(Page::Settings);paint(m);expect(!screenHas("DISPLAY:"),"fixed targets hide orientation toggle");
+  expect(!screenHas("ALERT VOLUME"),"boards without a codec hide alert volume");
+  // Codec boards add an alert volume row that cycles 25/50/75/100 percent.
+  hw::hostRotatable=true;hw::hostVolumeAdjustable=true;hw::hostVolume=75;hw::setDisplayLandscape(true);applyOrientation();
+  setPage(Page::Settings);paint(m);
+  expect(screenHas("ALERT VOLUME: 75%")&&screenHas("DISPLAY: LANDSCAPE")&&!textOverlaps(),"six settings rows fit in landscape");
+  {Rect targets[MAX_TARGETS];const size_t count=focusTargets(m,targets);expect(count>=8,"volume row is focusable");
+   for(size_t i=0;i<count;++i){focusVisible=true;focusIndex=int(i);paint(m);++assertions;}focusVisible=false;focusIndex=-1;}
+  capture(output,"landscape-settings-volume",m);
+  hw::hostLastToneHz=0;tap(120,224,m);
+  expect(hw::hostVolume==100&&hw::hostLastToneHz!=0&&screenHas("ALERT VOLUME: 100%"),"volume steps up with a preview tone");
+  tap(120,224,m);expect(hw::hostVolume==25,"volume wraps to the lowest level");
+  tap(120,192,m);expect(!hw::hostLandscape&&hw::hostVolume==25,"display row still toggles orientation");
+  paint(m);expect(!textOverlaps(),"six settings rows fit in portrait");capture(output,"portrait-settings-volume",m);
+  hw::hostVolumeAdjustable=false;hw::hostRotatable=false;hw::setDisplayLandscape(false);applyOrientation();
 }
 int main(int argc,char** argv) {
   expect(argc==2,"output directory supplied");const char* output=argv[1];

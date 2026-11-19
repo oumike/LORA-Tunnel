@@ -20,7 +20,7 @@ The web flasher and release packaging do not include this target yet.
 | SD | SD_MMC 1-bit: CLK 2, CMD 3, D0 1; power on expander bit 14 |
 | GNSS | L76K, ESP32 RX 18 / TX 17, 9600 baud; power and reset through the expander; no PPS |
 | LoRa | SX1262, SCK 4, MISO 5, MOSI 6, CS 21, RESET 7, BUSY 8, DIO1 9; 1.8 V TCXO; no external FEM control |
-| Audio | ES8311 DAC + amplifier: MCLK 10, BCLK 11, WS 12, DOUT 16. Recon alert tones are 16 kHz I2S sine bursts |
+| Audio | ES8311 DAC + amplifier: MCLK 10, BCLK 11, WS 12, DOUT 16. Recon alerts are 16 kHz I2S chime notes, queued so amplifier power-up delays a riff instead of cutting it |
 | Buttons | USER GPIO0 (short press selects, long press goes back); WAKE on expander bit 0 (next) |
 | Battery | ADS1115 channel 0, ×2 divider while expander bit 15 is high |
 
@@ -32,6 +32,10 @@ Differences from the Heltec target:
 ## Display orientation
 
 **Settings → Display** switches between landscape (the default) and portrait. The choice is saved in NVS. Landscape scales the 240 × 320 touch layout onto the 320 × 240 panel, and touches are mapped back. Host UI checks cover both orientations (`tests/ui_host/heltec_mesh_ui.cpp`, `landscape-*` previews).
+
+## Alert volume
+
+**Settings → Alert volume** cycles 25/50/75/100 percent (default 75) and plays a short preview. The level is saved in NVS. **MUTE / SOUND** on the Recon page still turns alerts off and on.
 
 ## Hardware acceptance still required
 

@@ -428,14 +428,28 @@ void reconDetail() {
   button(8, 280, 224, 32, "< BACK TO MATCHES", CYAN);
 }
 
-// Draw, touch and focus share these rows. Rotatable targets add DISPLAY.
-enum SettingsRow : uint8_t { RegionRow, KeysRow, PowerRow, MeshRow, DisplayRow };
+// Draw, touch and focus share these rows. Rotatable targets add DISPLAY;
+// boards with a codec add ALERT VOLUME.
+enum SettingsRow : uint8_t { RegionRow, KeysRow, PowerRow, MeshRow, DisplayRow, VolumeRow };
 constexpr Rect SETTINGS_ROWS[]={{8,52,224,38},{8,102,224,38},{8,152,224,38},{8,202,224,32}};
 constexpr Rect ROTATABLE_SETTINGS_ROWS[]={{8,50,224,34},{8,90,224,34},{8,130,224,34},{8,170,224,32},{8,208,224,30}};
-size_t settingsRows() { return hw::displayRotatable() ? 5 : 4; }
-Rect settingsRow(size_t row) { return hw::displayRotatable() ? ROTATABLE_SETTINGS_ROWS[row] : SETTINGS_ROWS[row]; }
+constexpr Rect SIX_SETTINGS_ROWS[]={{8,50,224,28},{8,82,224,28},{8,114,224,28},{8,146,224,28},{8,178,224,28},{8,210,224,28}};
+size_t settingsRows() { return 4+(hw::displayRotatable()?1:0)+(hw::alertVolumeAdjustable()?1:0); }
+SettingsRow settingsKind(size_t row) {
+  if(row<DisplayRow) return SettingsRow(row);
+  return row==DisplayRow && hw::displayRotatable() ? DisplayRow : VolumeRow;
+}
+Rect settingsRow(size_t row) {
+  const size_t rows=settingsRows();
+  return rows==4 ? SETTINGS_ROWS[row] : rows==5 ? ROTATABLE_SETTINGS_ROWS[row] : SIX_SETTINGS_ROWS[row];
+}
 void settingsButton(size_t row,const char* name,uint16_t accent) {
   const Rect r=settingsRow(row);button(r.x,r.y,r.w,r.h,name,accent);
+}
+constexpr uint8_t VOLUME_LEVELS[]={25,50,75,100};
+uint8_t nextVolume(uint8_t current) {
+  for(const auto level:VOLUME_LEVELS) if(level>current) return level;
+  return VOLUME_LEVELS[0];
 }
 
 void settings(const ui::Model& m) {
@@ -446,8 +460,15 @@ void settings(const ui::Model& m) {
   settingsButton(KeysRow,"CONNECTION KEYS",CYAN);
   settingsButton(PowerRow,"POWER",AMBER);
   settingsButton(MeshRow,"MESH RADIO / DECODE SETTINGS",GREEN);
-  if(settingsRows()>DisplayRow)
-    settingsButton(DisplayRow,hw::displayLandscape()?"DISPLAY: LANDSCAPE":"DISPLAY: PORTRAIT",CYAN);
+  for(size_t row=DisplayRow;row<settingsRows();++row) {
+    if(settingsKind(row)==DisplayRow)
+      settingsButton(row,hw::displayLandscape()?"DISPLAY: LANDSCAPE":"DISPLAY: PORTRAIT",CYAN);
+    else {
+      char volume[32];
+      snprintf(volume,sizeof(volume),"ALERT VOLUME: %u%%",unsigned(hw::alertVolume()));
+      settingsButton(row,volume,GREEN);
+    }
+  }
   if(m.notice[0]) wrapped(m.notice,12,246,sizeof(m.notice),AMBER);
   button(8,280,108,32,"< BACK",CYAN);
   button(124,280,108,32,"RETRY SD",GREEN);
@@ -755,16 +776,23 @@ void touchAction(uint16_t x, uint16_t y, const ui::Model& m) {
     if (inside(x, y, 8, 280, 224, 32)) setPage(Page::Recon);
   } else if (page == Page::Settings) {
     auto row=[&](size_t i){const Rect r=settingsRow(i);return inside(x,y,r.x,r.y,r.w,r.h);};
-    if(row(RegionRow)) openRegions(m,false);
-    else if(row(KeysRow)) setPage(Page::Credentials);
-    else if(row(PowerRow)) { powerDialog=true; focusIndex=-1; }
-    else if(row(MeshRow))setPage(Page::MeshSettings);
-    else if(settingsRows()>DisplayRow && row(DisplayRow)) {
-      hw::setDisplayLandscape(!hw::displayLandscape());
-      applyOrientation();
+    size_t hit=settingsRows();
+    for(size_t i=0;i<settingsRows();++i) if(row(i)) { hit=i; break; }
+    if(hit==settingsRows()) {
+      if(inside(x,y,8,280,108,32)) setPage(settingsParent);
+      else if(inside(x,y,124,280,108,32) && onAction) onAction(ui::Action::RetryStorage,0,"");
+    } else switch(settingsKind(hit)) {
+      case RegionRow: openRegions(m,false); break;
+      case KeysRow: setPage(Page::Credentials); break;
+      case PowerRow: powerDialog=true; focusIndex=-1; break;
+      case MeshRow: setPage(Page::MeshSettings); break;
+      case DisplayRow: hw::setDisplayLandscape(!hw::displayLandscape()); applyOrientation(); break;
+      case VolumeRow:
+        hw::setAlertVolume(nextVolume(hw::alertVolume()));
+        hw::alertTone(1568,90); // Short preview at the new level.
+        dirty=true;
+        break;
     }
-    else if(inside(x,y,8,280,108,32)) setPage(settingsParent);
-    else if(inside(x,y,124,280,108,32) && onAction) onAction(ui::Action::RetryStorage,0,"");
   } else if(page==Page::MeshSettings) {
     for(unsigned i=0;i<ui::mesh_settings::FieldCount;++i)if(inside(x,y,8,65+int(i)*30,224,27)) {
       meshField=i;meshChoice=ui::mesh_settings::selected(i,m);setPage(Page::MeshChoice);break;
