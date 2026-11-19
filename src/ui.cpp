@@ -36,6 +36,7 @@ int tab = 0, field = 0, keyPage = 0;
 unsigned meshField=0,meshChoice=0;
 constexpr unsigned MESH_CHOICES_PER_PAGE=4;
 uint8_t reconFilter = 0, reconPage = 0;
+bool reconFilterOpen = false;
 int focusIndex = -1;
 bool focusVisible = false;
 struct Rect { uint16_t x, y, w, h; };
@@ -230,7 +231,7 @@ void statusLines(const ui::Model& m) {
 }
 
 void setPage(Page next) {
-  if (page != next) { page = next; focusIndex = -1; fullClearNeeded = true; }
+  if (page != next) { page = next; focusIndex = -1; fullClearNeeded = true; reconFilterOpen = false; }
   dirty = true;
 }
 
@@ -356,13 +357,32 @@ unsigned filteredMatches(const ui::Model& m, uint8_t indices[8]) {
   return count;
 }
 
+// The filter dropdown lists every category in two columns over the match list.
+constexpr unsigned FILTER_ROWS = (LAST_CATEGORY + 2) / 2;
+Rect filterOption(uint8_t category) {
+  const unsigned column = category / FILTER_ROWS, row = category % FILTER_ROWS;
+  return Rect{uint16_t(12 + column * 110), uint16_t(110 + row * 25), 106, 22};
+}
+
+void closeReconFilter() { reconFilterOpen = false; fullClearNeeded = true; }
+
+void reconFilterDropdown() {
+  gfx().fillRoundRect(8, 106, 224, 206, 4, BG);
+  gfx().drawRoundRect(8, 106, 224, 206, 4, CYAN);
+  for (uint8_t category = 0; category <= LAST_CATEGORY; ++category) {
+    const Rect r = filterOption(category);
+    button(r.x, r.y, r.w, r.h, categoryShort(category), CYAN, category == reconFilter);
+  }
+}
+
 void recon(const ui::Model& m) {
   heading("RECON / MATCHED INDICATORS");
   statusLines(m);
   char text[48];
-  snprintf(text, sizeof(text), "FILTER: %s >", categoryShort(reconFilter));
+  snprintf(text, sizeof(text), "FILTER: %s %s", categoryShort(reconFilter), reconFilterOpen ? "^" : "v");
   button(8, 78, 168, 26, text, CYAN);
   button(184, 78, 48, 26, m.recon_alerts ? "MUTE" : "SOUND", m.recon_alerts ? GREEN : MUTED);
+  if (reconFilterOpen) { reconFilterDropdown(); return; }
   gfx().fillRect(8, 110, 224, 22, BG);
   snprintf(text, sizeof(text), "MATCHES %lu / BUZZER %s", static_cast<unsigned long>(m.recon_total),
            m.recon_alerts ? "ON" : "OFF");
@@ -743,9 +763,18 @@ void touchAction(uint16_t x, uint16_t y, const ui::Model& m) {
   } else if (page == Page::Wardriver || page == Page::Recon) {
     if (page == Page::Wardriver) {
       for (int i = 0; i < 3; ++i) if (inside(x, y, 8 + i * 76, 78, 72, 26)) tab = i;
+    } else if (reconFilterOpen) {
+      // Modal: choose a category, or tap anywhere else to dismiss.
+      for (uint8_t category = 0; category <= LAST_CATEGORY; ++category) {
+        const Rect r = filterOption(category);
+        if (inside(x, y, r.x, r.y, r.w, r.h)) { reconFilter = category; reconPage = 0; break; }
+      }
+      closeReconFilter(); focusIndex = 0;
+      dirty = true; return;
     } else {
       if (inside(x, y, 8, 78, 168, 26)) {
-        reconFilter = (reconFilter + 1) % (LAST_CATEGORY + 1); reconPage = 0;
+        reconFilterOpen = true; focusIndex = reconFilter;
+        dirty = true; return;
       }
       if (inside(x, y, 184, 78, 48, 26) && onAction)
         onAction(ui::Action::ToggleAlerts, m.recon_alerts ? 0 : 1, "");
@@ -862,6 +891,7 @@ void touchAction(uint16_t x, uint16_t y, const ui::Model& m) {
 
 void back() {
   if(powerDialog) { powerDialog=false; fullClearNeeded=true; dirty=true; return; }
+  if(page==Page::Recon && reconFilterOpen) { closeReconFilter(); focusIndex=0; dirty=true; return; }
   if (page == Page::Keyboard) { eraseInput(); setPage(messageEditor?Page::Messages:Page::Credentials);messageEditor=false; }
   else if(page==Page::Messages)messageBack();
   else if(page==Page::MeshChoice) {setPage(Page::MeshSettings);focusIndex=int(meshField);}
@@ -894,6 +924,11 @@ size_t focusTargets(const ui::Model& m, Rect targets[MAX_TARGETS]) {
   } else if (page == Page::Wardriver || page == Page::Recon) {
     if (page == Page::Wardriver) {
       for (int i = 0; i < 3; ++i) add(8 + i * 76, 78, 72, 26);
+    } else if (reconFilterOpen) {
+      for (uint8_t category = 0; category <= LAST_CATEGORY; ++category) {
+        const Rect r = filterOption(category); add(r.x, r.y, r.w, r.h);
+      }
+      return count;
     } else {
       add(8, 78, 168, 26); add(184, 78, 48, 26);
       uint8_t indices[8];
@@ -977,7 +1012,7 @@ void begin(Handler handler) {
   touchReleasePending = false; touchReleasedAt = 0;
   page = Page::Home; settingsParent = Page::Home;
   powerDialog=false; onboardingShown=false; regionOnboarding=false;
-  tab = 0; reconFilter = 0; reconPage = 0;
+  tab = 0; reconFilter = 0; reconPage = 0; reconFilterOpen = false;
   meshField=meshChoice=0;
   messageState=ui::messages::State{};messagePage=0;messageEditor=false;
   focusIndex = -1; focusVisible = false;

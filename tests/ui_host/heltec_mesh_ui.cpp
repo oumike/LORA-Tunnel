@@ -181,6 +181,28 @@ bool textOverlaps() {
 }
 // Rotatable targets map the portrait layout onto 320x240. Every page and focus
 // outline must stay on the landscape surface, and text rows must not collide.
+void reconFilterChecks(const char* output,ui::Model m,const char* preview) {
+  using tunnel::recon::Category;
+  std::strcpy(m.recon_recent[0],"Flock camera");m.recon_categories[0]=uint8_t(Category::Flock);
+  std::strcpy(m.recon_recent[1],"AirTag");m.recon_categories[1]=uint8_t(Category::AirTag);
+  reconFilter=0;setPage(Page::Recon);paint(m);expect(screenHas("FILTER: ALL v"),"closed filter shows a dropdown caret");
+  const size_t before=sent.size();
+  tap(90,90,m);expect(reconFilterOpen&&screenHas("FILTER: ALL ^")&&!textOverlaps(),"filter tap opens the dropdown");
+  for(uint8_t c=0;c<=LAST_CATEGORY;++c)expect(screenHas(categoryShort(c)),"dropdown lists every category");
+  {Rect targets[MAX_TARGETS];const size_t count=focusTargets(m,targets);expect(count==LAST_CATEGORY+1u,"open dropdown focuses only its options");
+   for(size_t i=0;i<count;++i){focusVisible=true;focusIndex=int(i);paint(m);++assertions;}focusVisible=false;focusIndex=-1;}
+  capture(output,preview,m);
+  const Rect flock=filterOption(uint8_t(Category::Flock));tap(flock.x+5,flock.y+5,m);
+  expect(!reconFilterOpen&&reconFilter==uint8_t(Category::Flock)&&screenHas("Flock camera")&&!screenHas("AirTag"),"choosing an option applies the filter and closes");
+  tap(90,90,m);tap(120,55,m);
+  expect(!reconFilterOpen&&reconFilter==uint8_t(Category::Flock)&&page==Page::Recon&&sent.size()==before,"tapping outside dismisses without touching controls beneath");
+  tap(90,90,m);press(hw::Back,m);expect(!reconFilterOpen&&page==Page::Recon,"Back closes the dropdown before leaving Recon");
+  m.buttons_enabled=true;focusIndex=0;press(hw::Select,m);
+  expect(reconFilterOpen&&focusIndex==int(Category::Flock),"physical Select opens with the current filter focused");
+  press(hw::Next,m);press(hw::Select,m);
+  expect(!reconFilterOpen&&reconFilter==uint8_t(Category::Flock)+1,"physical buttons choose the next category");
+  reconFilter=0;focusVisible=false;focusIndex=-1;sent.resize(before);
+}
 void landscapeChecks(const char* output,ui::Model m) {
   using ui::messages::Screen;
   hw::hostRotatable=true;hw::setDisplayLandscape(true);buffered=true;applyOrientation();
@@ -200,6 +222,7 @@ void landscapeChecks(const char* output,ui::Model m) {
   for(unsigned i=0;i<140;++i)append(char('a'+i%26));paint(m);
   expect(!textOverlaps(),"landscape compose lines do not overlap");capture(output,"landscape-compose",m);
   messageEditor=false;eraseInput();
+  reconFilterChecks(output,m,"landscape-recon-filter");
   for(Screen screen:{Screen::Mode,Screen::Menu,Screen::Inbox,Screen::Contacts,Screen::Settings,Screen::Identity}) {
     messageState={};messageState.screen=screen;messagePage=0;setPage(Page::Messages);paint(m);
     Rect targets[MAX_TARGETS];const size_t count=focusTargets(m,targets);
@@ -302,6 +325,7 @@ int main(int argc,char** argv) {
   }
   messagingChecks(output,model);
   touchGestureChecks();
+  reconFilterChecks(output,model,"recon-filter");
   landscapeChecks(output,model);
   expect(!hostAllocationCount,"mesh and messaging pages require no new framebuffer allocation");
   std::cout<<"Heltec mesh UI: "<<assertions<<" checks passed; all draw and button-focus bounds checked. Synthetic previews only.\n";
