@@ -2,7 +2,7 @@
 
 PlatformIO environment `wio-tracker-l2` (`-D LORA_TUNNEL_WIO_TRACKER_L2`) builds LORA Tunnel for the **Seeed Wio Tracker L2**. It has an ESP32-S3 with 16 MB flash and 8 MB PSRAM, an SX1262, an L76K GNSS, a 320 × 240 NV3031B QSPI touchscreen and a microSD slot. Board constants are in the `LORA_TUNNEL_WIO_TRACKER_L2` branch of `include/board_config.h`. The hardware layer is `src/hardware_wio_tracker_l2.cpp`.
 
-The pin map and bring-up sequence come from the Seeed board support used by the wadamesh and Camillia-MT Wio Tracker L2 variants. **This target compiles, but it has not been tested on physical hardware.**
+The pin map and bring-up sequence come from the Seeed board support used by the wadamesh and Camillia-MT Wio Tracker L2 variants. **This target has had only a bench bring-up on one unit; see [Hardware status](#hardware-status).**
 
 ```sh
 python -m platformio run -e wio-tracker-l2
@@ -37,17 +37,18 @@ Differences from the Heltec target:
 
 **Settings → Alert volume** cycles 25/50/75/100 percent (default 75) and plays a short preview. The level is saved in NVS. **MUTE / SOUND** on the Recon page still turns alerts off and on.
 
-## Hardware acceptance still required
+## Hardware status
 
-None of the following has been checked on a physical unit:
+Bench bring-up on one unit (flashed over USB, read back with the `tunnel status` serial command):
+- esptool reports an ESP32-S3 with 16 MB flash and 8 MB PSRAM.
+- Boots to `ready=1` with `sd=1`, `touch=1`, `audio_ok=1` and no allocation failures.
+- GNSS streams NMEA and reached a fix (8 satellites).
+
+Still to check on hardware:
 - Display colour, offset and the portrait rotation direction.
 - GT911 coordinate mapping in both orientations, all four corners.
 - Both buttons and sleep/wake.
-- SD mount, writes and power cycling.
-- GNSS bytes, fix and time.
-- LoRa reception.
-- Alert tone volume.
+- SD writes over a full session and across power cycles.
+- LoRa reception (the bench unit had no region set).
+- How the alert chime sounds at each volume level.
 - Battery voltage calibration.
-- PSRAM size.
-
-A build pass is not evidence for any of these.
